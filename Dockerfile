@@ -9,7 +9,8 @@ RUN pip install --no-cache-dir -r requirements.txt
 
 COPY . .
 
-RUN touch data/__init__.py && touch server/__init__.py
+RUN mkdir -p data server && \
+    touch data/__init__.py server/__init__.py
 
 ENV PORT=7860
 ENV PYTHONUNBUFFERED=1

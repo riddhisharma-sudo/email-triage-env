@@ -10,14 +10,18 @@ readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
 dependencies = [
-    "fastapi==0.111.0",
-    "uvicorn[standard]==0.29.0",
-    "pydantic==2.7.1",
-    "pyyaml==6.0.1",
-    "openai==1.30.1",
-    "requests==2.32.2",
-    "httpx==0.27.0",
+    "fastapi>=0.111.0",
+    "uvicorn[standard]>=0.29.0",
+    "pydantic>=2.7.1",
+    "pyyaml>=6.0.1",
+    "openai>=1.30.1",
+    "requests>=2.32.2",
+    "httpx>=0.27.0",
+    "openenv-core>=0.2.0",
 ]
+
+[project.scripts]
+serve = "server.app:main"
 
 [project.optional-dependencies]
 dev = [
@@ -27,13 +31,13 @@ dev = [
 
 [tool.setuptools.packages.find]
 where = ["."]
-include = ["data*"]
+include = ["data*", "server*"]
 
 [tool.openenv]
 name = "email-triage-env"
 version = "1.0.0"
 tasks = ["classify_urgency", "triage_and_route", "inbox_zero"]
-entry_point = "server:app"
+entry_point = "server.app:app"
 reset_endpoint = "/reset"
 step_endpoint = "/step"
 state_endpoint = "/state"
