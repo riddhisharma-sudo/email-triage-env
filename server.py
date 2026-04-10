@@ -67,20 +67,24 @@ def health():
 
 
 @app.post("/reset", response_model=ResetResponse)
-def reset(req: ResetRequest):
+def reset(req: Optional[ResetRequest] = None):
     valid_tasks = ["classify_urgency", "triage_and_route", "inbox_zero"]
-    if req.task_id not in valid_tasks:
+
+    # Allow completely empty body — default to classify_urgency
+    task_id = (req.task_id if req else None) or "classify_urgency"
+    session_id = (req.session_id if req else None) or str(uuid.uuid4())
+
+    if task_id not in valid_tasks:
         raise HTTPException(status_code=400, detail=f"Invalid task_id. Choose from: {valid_tasks}")
 
-    session_id = req.session_id or str(uuid.uuid4())
-    env = EmailTriageEnv(task_id=req.task_id)
+    env = EmailTriageEnv(task_id=task_id)
     obs = env.reset()
     _sessions[session_id] = env
 
     return ResetResponse(
         session_id=session_id,
         observation=obs.model_dump(),
-        info={"task_id": req.task_id, "max_steps": env.TASK_MAX_STEPS[req.task_id]},
+        info={"task_id": task_id, "max_steps": env.TASK_MAX_STEPS[task_id]},
     )
 
 
