@@ -17,6 +17,20 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from pydantic import BaseModel, Field
 
+
+# ──────────────────────────────────────────────
+# Score clamping — validator requires STRICTLY (0, 1)
+# ──────────────────────────────────────────────
+
+_SCORE_MIN = 0.001
+_SCORE_MAX = 0.999
+
+
+def _clamp(value: float) -> float:
+    """Clamp score to strictly open interval (0, 1)."""
+    return max(_SCORE_MIN, min(_SCORE_MAX, value))
+
+
 # ──────────────────────────────────────────────
 # Pydantic Models (OpenEnv spec compliance)
 # ──────────────────────────────────────────────
@@ -46,10 +60,10 @@ class Observation(BaseModel):
 
 
 class Action(BaseModel):
-    action_type: str  # classify | route | reply | archive | escalate | mark_spam | defer | flag
+    action_type: str
     email_id: str
-    urgency: Optional[str] = None      # critical | high | medium | low
-    category: Optional[str] = None     # support | sales | internal | spam | legal | finance | hr | engineering
+    urgency: Optional[str] = None
+    category: Optional[str] = None
     department: Optional[str] = None
     reply_text: Optional[str] = None
     reason: Optional[str] = None
@@ -76,14 +90,16 @@ class State(BaseModel):
 # ──────────────────────────────────────────────
 
 URGENCY_LEVELS = {"critical": 4, "high": 3, "medium": 2, "low": 1}
+
+# All raw component scores — will be clamped at composite level
 URGENCY_SCORE = {
-    (4, 4): 1.0, (3, 3): 1.0, (2, 2): 1.0, (1, 1): 1.0,
-    (4, 3): 0.5, (3, 4): 0.6,  # close misses
-    (3, 2): 0.4, (2, 3): 0.5,
-    (2, 1): 0.3, (1, 2): 0.4,
-    (4, 2): 0.0, (4, 1): 0.0,  # critical missed badly
-    (3, 1): 0.1,
-    (2, 4): 0.2, (1, 3): 0.2, (1, 4): 0.1,
+    (4, 4): 0.98, (3, 3): 0.98, (2, 2): 0.98, (1, 1): 0.98,
+    (4, 3): 0.50, (3, 4): 0.60,
+    (3, 2): 0.40, (2, 3): 0.50,
+    (2, 1): 0.30, (1, 2): 0.40,
+    (4, 2): 0.02, (4, 1): 0.02,
+    (3, 1): 0.10,
+    (2, 4): 0.20, (1, 3): 0.20, (1, 4): 0.10,
 }
 
 DEPT_MAP = {
@@ -100,30 +116,28 @@ DEPT_MAP = {
 
 def score_urgency(predicted: Optional[str], ground_truth: str) -> float:
     if predicted is None:
-        return 0.0
+        return 0.05
     pred_lvl = URGENCY_LEVELS.get(predicted, 0)
     gt_lvl = URGENCY_LEVELS.get(ground_truth, 0)
-    return URGENCY_SCORE.get((gt_lvl, pred_lvl), 0.1)
+    return URGENCY_SCORE.get((gt_lvl, pred_lvl), 0.10)
 
 
 def score_routing(predicted_dept: Optional[str], gt_category: str) -> float:
     if predicted_dept is None:
-        return 0.0
+        return 0.05
     valid_depts = DEPT_MAP.get(gt_category, set())
     if predicted_dept in valid_depts:
-        return 1.0
-    # partial credit for reasonable near-misses
+        return 0.98
     if gt_category == "support" and predicted_dept == "sales":
-        return 0.3
+        return 0.30
     if gt_category == "finance" and predicted_dept in ("legal", "support"):
-        return 0.2
-    return 0.0
+        return 0.20
+    return 0.05
 
 
 def score_action(predicted_action: str, gt_action: str, gt_urgency: str) -> float:
     if predicted_action == gt_action:
-        return 1.0
-    # Partial credit for reasonable alternatives
+        return 0.98
     acceptable_alts = {
         "escalate": {"flag", "route"},
         "route": {"reply", "escalate"},
@@ -133,36 +147,33 @@ def score_action(predicted_action: str, gt_action: str, gt_urgency: str) -> floa
     }
     alts = acceptable_alts.get(gt_action, set())
     if predicted_action in alts:
-        return 0.5
-    # Penalize archiving/ignoring critical emails
+        return 0.50
     if gt_urgency == "critical" and predicted_action in ("archive", "defer", "mark_spam"):
-        return -0.2
-    return 0.0
+        return 0.02
+    return 0.05
 
 
 def score_reply_quality(reply_text: Optional[str], gt_action: str) -> float:
-    """Simple heuristic: replies should be substantive (>20 chars), professional."""
     if gt_action != "reply":
-        return 1.0  # not expected — no penalty
+        return 0.98
     if not reply_text:
-        return 0.0
+        return 0.05
     if len(reply_text.strip()) < 20:
-        return 0.2
+        return 0.20
     if len(reply_text.strip()) < 50:
-        return 0.6
-    return 1.0
+        return 0.60
+    return 0.98
 
 
 def score_duplicate_detection(action: Action, email_data: Dict) -> float:
-    """Reward archiving known duplicates, penalize re-escalating them."""
     is_dup = email_data.get("is_duplicate", False)
     if is_dup:
         if action.action_type == "archive":
-            return 1.0
+            return 0.98
         if action.action_type in ("escalate", "flag"):
-            return 0.0
-        return 0.5
-    return 1.0  # not a duplicate, no penalty
+            return 0.05
+        return 0.50
+    return 0.98
 
 
 # ──────────────────────────────────────────────
@@ -170,15 +181,6 @@ def score_duplicate_detection(action: Action, email_data: Dict) -> float:
 # ──────────────────────────────────────────────
 
 class EmailTriageEnv:
-    """
-    Email Triage OpenEnv Environment.
-
-    Implements OpenEnv spec:
-      reset() → Observation
-      step(action) → (Observation, Reward, done, info)
-      state() → State
-    """
-
     TASK_EMAIL_COUNT = {
         "classify_urgency": 1,
         "triage_and_route": 10,
@@ -205,8 +207,6 @@ class EmailTriageEnv:
         self.done = False
         self._action_log: List[Dict] = []
 
-    # ── OpenEnv interface ──────────────────────
-
     def reset(self) -> Observation:
         from data.emails import get_task1_email, get_task2_emails, get_task3_emails, strip_ground_truth
 
@@ -226,7 +226,6 @@ class EmailTriageEnv:
             self._raw_emails = get_task3_emails()
 
         self._pending = copy.deepcopy(self._raw_emails)
-
         inbox = [EmailObject(**strip_ground_truth(e)) for e in self._pending]
         current = inbox[0] if inbox else None
 
@@ -245,24 +244,20 @@ class EmailTriageEnv:
 
     def step(self, action: Action) -> Tuple[Observation, Reward, bool, Dict]:
         if self.done:
-            return self._make_obs(), Reward(value=0.0, feedback="Episode already done."), True, {}
+            return self._make_obs(), Reward(value=_SCORE_MIN, feedback="Episode already done."), True, {}
 
         self.step_number += 1
         max_steps = self.TASK_MAX_STEPS[self.task_id]
 
-        # Find the target email
         email_data = self._find_pending(action.email_id)
         if email_data is None:
-            # Try processed (agent re-acted on already-handled email)
-            reward = Reward(value=0.0, feedback=f"Email {action.email_id} not found or already processed.")
+            reward = Reward(value=_SCORE_MIN, feedback=f"Email {action.email_id} not found or already processed.")
             obs = self._make_obs()
             self._maybe_finish(max_steps)
             return obs, reward, self.done, {"error": "email_not_found"}
 
-        # Grade the action
         reward, info = self._grade_action(action, email_data)
 
-        # Move email to processed
         email_data["agent_action"] = action.model_dump()
         email_data["reward_earned"] = reward.value
         self._pending = [e for e in self._pending if e["id"] != action.email_id]
@@ -271,7 +266,6 @@ class EmailTriageEnv:
         self.total_reward += reward.value
         self._action_log.append({"step": self.step_number, "action": action.model_dump(), "reward": reward.value})
 
-        # Check SLA breach
         if email_data.get("sla_hours", 999) < 1 and action.action_type in ("archive", "defer", "mark_spam"):
             self.sla_breaches += 1
 
@@ -290,30 +284,25 @@ class EmailTriageEnv:
             done=self.done,
         )
 
-    # ── Grading logic ──────────────────────────
-
     def _grade_action(self, action: Action, email_data: Dict) -> Tuple[Reward, Dict]:
         gt_urgency = email_data["gt_urgency"]
         gt_category = email_data["gt_category"]
         gt_dept = email_data["gt_department"]
         gt_action = email_data["gt_action"]
 
-        # Component scores
         urgency_score = score_urgency(action.urgency, gt_urgency)
         routing_score = score_routing(action.department, gt_category)
         action_score = score_action(action.action_type, gt_action, gt_urgency)
         reply_score = score_reply_quality(action.reply_text, gt_action)
         dup_score = score_duplicate_detection(action, email_data)
 
-        # Task-specific weighting
         if self.task_id == "classify_urgency":
-            # Urgency classification is the only thing that matters
             weights = {"urgency": 0.6, "category": 0.4, "action": 0.0, "reply": 0.0, "dup": 0.0}
-            category_score = 1.0 if (action.category == gt_category) else 0.3
+            category_score = 0.98 if (action.category == gt_category) else 0.30
             routing_score = category_score
         elif self.task_id == "triage_and_route":
             weights = {"urgency": 0.3, "category": 0.3, "action": 0.3, "reply": 0.1, "dup": 0.0}
-        else:  # inbox_zero
+        else:
             weights = {"urgency": 0.2, "category": 0.2, "action": 0.25, "reply": 0.15, "dup": 0.2}
 
         composite = (
@@ -323,8 +312,9 @@ class EmailTriageEnv:
             + weights["reply"] * reply_score
             + weights["dup"] * dup_score
         )
-        # Clamp to [0, 1]
-        composite = max(0.0, min(1.0, composite))
+
+        # Clamp strictly to (0.001, 0.999) — validator requires strictly open interval
+        composite = _clamp(composite)
 
         breakdown = {
             "urgency_score": round(urgency_score, 3),
@@ -334,7 +324,6 @@ class EmailTriageEnv:
             "dup_score": round(dup_score, 3),
         }
 
-        # Build human-readable feedback
         feedback_parts = []
         if urgency_score < 0.5:
             feedback_parts.append(f"Urgency mismatch (predicted={action.urgency}, actual={gt_urgency})")
@@ -349,8 +338,6 @@ class EmailTriageEnv:
             Reward(value=round(composite, 4), breakdown=breakdown, feedback="; ".join(feedback_parts)),
             {"gt_urgency": gt_urgency, "gt_action": gt_action, "gt_dept": gt_dept},
         )
-
-    # ── Helpers ───────────────────────────────
 
     def _find_pending(self, email_id: str) -> Optional[Dict]:
         for e in self._pending:
@@ -386,14 +373,10 @@ class EmailTriageEnv:
         )
 
     def final_score(self) -> float:
-        """
-        Normalized score in [0, 1] across the full episode.
-        Used by inference.py for [END] logging.
-        """
+        """Final episode score, strictly in (0.001, 0.999)."""
         total_emails = len(self._raw_emails)
         if total_emails == 0:
-            return 0.0
-        # Average per-email reward, with SLA breach penalty
+            return _SCORE_MIN
         avg = self.total_reward / total_emails
         penalty = 0.05 * self.sla_breaches
-        return max(0.0, min(1.0, avg - penalty))
+        return _clamp(avg - penalty)
