@@ -3,9 +3,9 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.backends.legacy:build"
 
 [project]
-name = "email-triage-env"
-version = "1.0.0"
-description = "A real-world email triage OpenEnv environment for AI agent training and evaluation."
+name = "email-triage-env-v2"
+version = "2.0.0"
+description = "Sequential email triage OpenEnv environment v2"
 readme = "README.md"
 license = { text = "MIT" }
 requires-python = ">=3.10"
@@ -23,22 +23,12 @@ dependencies = [
 [project.scripts]
 server = "server.app:main"
 
-[project.optional-dependencies]
-dev = [
-    "pytest>=8.0",
-    "pytest-asyncio>=0.23",
-]
-
 [tool.setuptools.packages.find]
 where = ["."]
 include = ["data*", "server*"]
 
 [tool.openenv]
-name = "email-triage-env"
-version = "1.0.0"
+name = "email-triage-env-v2"
+version = "2.0.0"
 tasks = ["classify_urgency", "triage_and_route", "inbox_zero"]
 entry_point = "server.app:app"
-reset_endpoint = "/reset"
-step_endpoint = "/step"
-state_endpoint = "/state"
-validate_endpoint = "/validate"

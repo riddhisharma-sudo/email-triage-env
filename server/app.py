@@ -1,8 +1,10 @@
 """
-FastAPI server for the Email Triage OpenEnv environment.
-Implements full OpenEnv spec including /metadata, /schema, /mcp endpoints.
+FastAPI server — Email Triage OpenEnv v2
+Implements full OpenEnv spec: /reset /step /state /validate
+/health /metadata /schema /mcp
 """
 import os
+import sys
 import uuid
 from typing import Dict, Optional
 
@@ -10,22 +12,19 @@ import yaml
 from fastapi import FastAPI, HTTPException, Query
 from pydantic import BaseModel
 
-# Add parent to path so env/data are importable
-import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-from env import Action, EmailTriageEnv, Observation, Reward, State
+from env import Action, EmailTriageEnvV2, Observation, Reward, State
 
 app = FastAPI(
-    title="Email Triage OpenEnv",
-    description="A real-world email triage environment for AI agent training and evaluation.",
-    version="1.0.0",
+    title="Email Triage OpenEnv v2",
+    description="Sequential email triage with thread dependencies, SLA clocks, phishing, and budget constraints.",
+    version="2.0.0",
 )
 
-_sessions: Dict[str, EmailTriageEnv] = {}
+_sessions: Dict[str, EmailTriageEnvV2] = {}
 
 
-# ── Request/Response schemas ──────────────────
+# ── Schemas ───────────────────────────────────────────────────────────────────
 
 class ResetRequest(BaseModel):
     task_id: str = "classify_urgency"
@@ -52,27 +51,33 @@ class StepResponse(BaseModel):
     info: dict = {}
 
 
-# ── Core OpenEnv endpoints ────────────────────
+# ── Endpoints ─────────────────────────────────────────────────────────────────
 
 @app.get("/health")
 def health():
-    # Must return "status": "healthy" for openenv-core validator
-    return {"status": "healthy", "env": "email-triage-env", "version": "1.0.0"}
+    return {"status": "healthy", "env": "email-triage-env-v2", "version": "2.0.0"}
 
 
 @app.get("/metadata")
 def metadata():
     return {
-        "name": "email-triage-env",
+        "name": "email-triage-env-v2",
         "description": (
-            "A real-world email triage environment where an AI agent classifies, "
-            "routes, replies to, and manages a realistic corporate inbox across 3 tasks "
-            "of increasing difficulty."
+            "A real-world sequential email triage environment with thread dependencies, "
+            "SLA countdown clocks, phishing detection, escalation budget constraints, "
+            "and context-sensitive grading across 3 tasks of increasing difficulty."
         ),
-        "version": "1.0.0",
+        "version": "2.0.0",
         "tasks": ["classify_urgency", "triage_and_route", "inbox_zero"],
-        "author": "openenv-submission",
-        "tags": ["email", "triage", "nlp", "productivity", "real-world"],
+        "mechanics": [
+            "thread_dependencies",
+            "sla_clock",
+            "context_rules",
+            "phishing_detection",
+            "escalation_budget",
+            "reply_quality_keywords",
+            "cascade_scoring",
+        ],
     }
 
 
@@ -82,10 +87,8 @@ def schema():
         "action": {
             "type": "object",
             "properties": {
-                "action_type": {
-                    "type": "string",
-                    "enum": ["classify", "route", "reply", "archive", "escalate", "mark_spam", "defer", "flag"],
-                },
+                "action_type": {"type": "string",
+                    "enum": ["escalate", "route", "reply", "archive", "mark_spam", "defer", "flag"]},
                 "email_id": {"type": "string"},
                 "urgency": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
                 "category": {"type": "string"},
@@ -100,11 +103,17 @@ def schema():
             "properties": {
                 "task_id": {"type": "string"},
                 "step_number": {"type": "integer"},
-                "inbox": {"type": "array"},
+                "inbox": {"type": "array",
+                    "items": {"type": "object",
+                        "properties": {
+                            "sla_steps_remaining": {"type": "integer"},
+                            "is_unlocked": {"type": "boolean"},
+                        }}},
                 "current_email": {"type": "object"},
                 "processed_count": {"type": "integer"},
                 "pending_count": {"type": "integer"},
                 "sla_breaches": {"type": "integer"},
+                "escalation_budget": {"type": "integer"},
                 "done": {"type": "boolean"},
                 "message": {"type": "string"},
             },
@@ -113,10 +122,10 @@ def schema():
             "type": "object",
             "properties": {
                 "task_id": {"type": "string"},
-                "step_number": {"type": "integer"},
                 "episode_id": {"type": "string"},
-                "processed_emails": {"type": "array"},
-                "pending_emails": {"type": "array"},
+                "action_history": {"type": "array"},
+                "sla_breaches": {"type": "integer"},
+                "escalation_budget": {"type": "integer"},
                 "total_reward": {"type": "number"},
                 "done": {"type": "boolean"},
             },
@@ -126,13 +135,12 @@ def schema():
 
 @app.post("/mcp")
 def mcp(payload: dict = None):
-    """MCP JSON-RPC endpoint required by openenv-core validator."""
     return {
         "jsonrpc": "2.0",
         "id": (payload or {}).get("id", 1),
         "result": {
-            "name": "email-triage-env",
-            "version": "1.0.0",
+            "name": "email-triage-env-v2",
+            "version": "2.0.0",
             "capabilities": ["reset", "step", "state", "schema", "metadata"],
         },
     }
@@ -147,14 +155,18 @@ def reset(req: Optional[ResetRequest] = None):
     if task_id not in valid_tasks:
         raise HTTPException(status_code=400, detail=f"Invalid task_id. Choose from: {valid_tasks}")
 
-    env = EmailTriageEnv(task_id=task_id)
+    env = EmailTriageEnvV2(task_id=task_id)
     obs = env.reset()
     _sessions[session_id] = env
 
     return ResetResponse(
         session_id=session_id,
         observation=obs.model_dump(),
-        info={"task_id": task_id, "max_steps": env.TASK_MAX_STEPS[task_id]},
+        info={
+            "task_id": task_id,
+            "max_steps": env.cfg["max_steps"],
+            "escalation_budget": env.escalation_budget,
+        },
     )
 
 
@@ -162,7 +174,7 @@ def reset(req: Optional[ResetRequest] = None):
 def step(req: StepRequest):
     env = _sessions.get(req.session_id)
     if env is None:
-        raise HTTPException(status_code=404, detail=f"Session '{req.session_id}' not found. Call /reset first.")
+        raise HTTPException(status_code=404, detail=f"Session '{req.session_id}' not found.")
 
     try:
         action = Action(**req.action)
@@ -199,6 +211,7 @@ def score(session_id: str = Query(...)):
         "final_score": env.final_score(),
         "total_reward": env.total_reward,
         "sla_breaches": env.sla_breaches,
+        "escalation_budget_remaining": env.escalation_budget,
         "processed_count": len(env._processed),
         "pending_count": len(env._pending),
         "done": env.done,
@@ -210,26 +223,25 @@ def validate():
     task_checks = {}
     for task_id in ["classify_urgency", "triage_and_route", "inbox_zero"]:
         try:
-            e = EmailTriageEnv(task_id=task_id)
+            e = EmailTriageEnvV2(task_id=task_id)
             obs = e.reset()
             assert isinstance(obs, Observation)
             assert len(obs.inbox) > 0
-            email = obs.inbox[0]
-            action = Action(action_type="classify", email_id=email.id, urgency="high", category="support")
+            email = next(em for em in obs.inbox if em.is_unlocked)
+            action = Action(action_type="escalate", email_id=email.id,
+                           urgency="critical", category="engineering", department="engineering")
             obs2, reward, done, info = e.step(action)
             assert isinstance(reward, Reward)
-            assert 0.0 <= reward.value <= 1.0
+            assert 0.0 < reward.value < 1.0, f"Score out of (0,1): {reward.value}"
+            s = e.state()
+            assert isinstance(s, State)
             task_checks[task_id] = "pass"
         except Exception as ex:
             task_checks[task_id] = f"fail: {ex}"
 
     all_pass = all(v == "pass" for v in task_checks.values())
-    return {
-        "valid": all_pass,
-        "spec_version": "1.0.0",
-        "tasks": list(task_checks.keys()),
-        "checks": {"tasks": task_checks},
-    }
+    return {"valid": all_pass, "spec_version": "2.0.0",
+            "tasks": list(task_checks.keys()), "checks": {"tasks": task_checks}}
 
 
 def main():

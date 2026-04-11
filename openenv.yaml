@@ -1,90 +1,15 @@
-name: email-triage-env
-version: "1.0.0"
+name: email-triage-env-v2
+version: "2.0.0"
 description: >
-  A real-world email triage environment where an AI agent must classify,
-  prioritize, route, and manage a realistic inbox of mixed corporate emails.
-  Tasks range from simple urgency classification to full inbox zero management.
-author: openenv-submission
-tags:
-  - email
-  - triage
-  - nlp
-  - productivity
-  - real-world
+  Sequential email triage with thread dependencies, SLA clocks,
+  phishing detection, escalation budgets, and context-sensitive grading.
 tasks:
   - id: classify_urgency
-    name: "Classify Email Urgency"
     difficulty: easy
-    description: >
-      Given a single email, classify its urgency level (critical/high/medium/low)
-      and category (support/sales/internal/spam/legal/finance).
     max_steps: 5
-    reward_range: [0.0, 1.0]
-
   - id: triage_and_route
-    name: "Triage and Route Emails"
     difficulty: medium
-    description: >
-      Process an inbox of 10 emails. For each email, classify urgency, assign
-      to the correct department, and draft a brief reply or action note.
     max_steps: 20
-    reward_range: [0.0, 1.0]
-
   - id: inbox_zero
-    name: "Inbox Zero Management"
     difficulty: hard
-    description: >
-      Manage a realistic inbox of 25 emails with dependencies, escalations,
-      SLA deadlines, duplicate threads, and spam. Achieve inbox zero while
-      maximizing SLA compliance and minimizing misdirected emails.
-    max_steps: 60
-    reward_range: [0.0, 1.0]
-
-api:
-  reset: POST /reset
-  step: POST /step
-  state: GET /state
-  validate: GET /validate
-
-observation_space:
-  type: object
-  properties:
-    inbox:
-      type: array
-      description: List of email objects currently in inbox
-    current_email:
-      type: object
-      description: The email currently being processed (if any)
-    processed_count:
-      type: integer
-    pending_count:
-      type: integer
-    sla_breaches:
-      type: integer
-    step_number:
-      type: integer
-    task_id:
-      type: string
-    done:
-      type: boolean
-
-action_space:
-  type: object
-  properties:
-    action_type:
-      type: string
-      enum: [classify, route, reply, archive, escalate, mark_spam, defer, flag]
-    email_id:
-      type: string
-    urgency:
-      type: string
-      enum: [critical, high, medium, low]
-    category:
-      type: string
-      enum: [support, sales, internal, spam, legal, finance, hr, engineering]
-    department:
-      type: string
-    reply_text:
-      type: string
-    reason:
-      type: string
+    max_steps: 50
